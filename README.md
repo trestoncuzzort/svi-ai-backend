@@ -1,16 +1,37 @@
-# FastAPI & LLM Document Extraction Service
+# Real Estate AI Extraction Microservice
 
-This repository contains a production-grade FastAPI backend designed to process unstructured real estate documents using a self-hosted AI model (Qwen2.5 via Ollama) and store the structured output in PostgreSQL.
+**Note:** This repository serves as the functional proof-of-concept and technical implementation for the pre-interview questionnaire provided by Stewart Valuation Intelligence. It demonstrates production-grade architectural patterns, security standards, and asynchronous data processing pipelines discussed in the technical assessment.
 
-## Architectural Decisions
+## Overview
 
-* **AI Data Parsing (Microservice Separation):** LLM integration is handled as an asynchronous HTTP request to a locally hosted Ollama server. This prevents sensitive document text from leaving our infrastructure[cite: 1]. It also separates the heavy GPU workloads from the FastAPI web workers, ensuring the API does not hang if the model is slow to load into VRAM.
-* **Database Session Handling:** SQLAlchemy sessions are strictly scoped to the request lifecycle using FastAPI dependencies (`yield db`).
-* **Data Integrity & PII Protection:** The application relies on PostgreSQL unique constraints to prevent race conditions. If a duplicate address is processed, the backend intercepts the `IntegrityError`, rolls back the transaction, and returns a sanitized HTTP 409 Conflict. This deliberately prevents raw database exceptions from leaking to the client, which could expose sensitive PII (like names or financials)[cite: 1].
-* **Structured Output Validation:** The LLM is strictly prompted to return JSON, which is then passed through a Pydantic `BaseModel` for validation before interacting with the database.
+This FastAPI microservice extracts property addresses and valuations from unstructured text using a local LLM (Qwen 2.5 via Ollama). By keeping the LLM inference localized (or on private EC2 instances in production), it inherently protects PII and sensitive real estate data from third-party API leakage. 
+
+## Architectural Requirements Implemented
+
+1. **JWT-Based Authentication**
+   - Endpoints are secured using PyJWT with a pinned HS256 algorithm.
+   - Token signatures and expiration times are explicitly verified *before* database sessions are opened.
+   - Unauthenticated or expired requests are cleanly rejected with `401 Unauthorized`.
+
+2. **Controlled Schema Migrations (Alembic)**
+   - Auto-table generation (`create_all`) has been removed in favor of Alembic migrations.
+   - This supports the "expand-and-contract" deployment strategy required for zero-downtime database updates on a live PostgreSQL instance.
+
+3. **Real-Time AI Streaming (SSE)**
+   - The `/stream-extract/` endpoint utilizes FastAPI's `StreamingResponse` to forward AI-generated tokens asynchronously from the Ollama server to the client via Server-Sent Events. 
+   - This eliminates long loading spinners for the end user.
+
+4. **Asynchronous Job Queues (202 Accepted)**
+   - The `/async-extract/` endpoint implements a non-blocking API contract for massive document payloads.
+   - It immediately returns an `HTTP 202 Accepted` status with a unique `job_id`, while offloading the heavy extraction process to a background worker (simulating an SQS/Celery pipeline).
+
+5. **Data Integrity & Error Handling**
+   - PostgreSQL `UNIQUE` constraints ensure duplicate property addresses are caught at the database level.
+   - `IntegrityError` exceptions securely roll back the database session and return a clean `409 Conflict` error without leaking backend state or PII.
 
 ## Tech Stack
-* **Framework:** FastAPI, Uvicorn
-* **Database:** PostgreSQL, SQLAlchemy (ORM)
-* **AI Provider:** Ollama (Qwen2.5:14b)[cite: 1]
-* **Validation:** Pydantic
+* **Framework:** FastAPI
+* **Database:** PostgreSQL & SQLAlchemy ORM
+* **Migrations:** Alembic
+* **AI Engine:** Ollama (Qwen 2.5:14b)
+* **Security:** PyJWT
